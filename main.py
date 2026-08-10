@@ -11,14 +11,15 @@ NOTION_API_KEY = os.environ.get("NOTION_API_KEY")
 NOTION_DATABASE_ID = os.environ.get("NOTION_DATABASE_ID")
 
 # 監視対象のRSSリスト（複数のメディアを登録可能）
+# 監視対象のRSSリスト（確実に建築・インテリア情報が得られる専門メディア）
 TARGET_FEEDS = [
     {
-        "name": "PR TIMES (不動産)",
-        "url": "https://prtimes.jp/main/html/rd/rss/sub_kind/3.xml"
+        "name": "ArchDaily (建築専門メディア)",
+        "url": "https://www.archdaily.com/rss"
     },
     {
-        "name": "JDN (デザイン・建築)",
-        "url": "https://www.japandesign.ne.jp/feed/"
+        "name": "AXIS Web Magazine (デザイン・建築)",
+        "url": "https://www.axismag.jp/feed"
     }
 ]
 
