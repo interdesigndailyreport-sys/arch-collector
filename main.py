@@ -10,15 +10,14 @@ GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
 NOTION_API_KEY = os.environ.get("NOTION_API_KEY")
 NOTION_DATABASE_ID = os.environ.get("NOTION_DATABASE_ID")
 
-# 監視対象のRSSリスト（複数のメディアを登録可能）
-# 監視対象のRSSリスト（確実に建築・インテリア情報が得られる専門メディア）
+# 監視対象のRSSリスト
 TARGET_FEEDS = [
     {
-        "name": "ArchDaily (建築専門メディア)",
+        "name": "ArchDaily",
         "url": "https://www.archdaily.com/rss"
     },
     {
-        "name": "AXIS Web Magazine (デザイン・建築)",
+        "name": "AXIS Web Magazine",
         "url": "https://www.axismag.jp/feed"
     }
 ]
@@ -71,6 +70,11 @@ URL: {link}
 
     try:
         response = requests.post(url, headers=headers, json=payload, timeout=30)
+        if response.status_code == 429:
+            print(" -> Gemini API レート制限検知 (429)。10秒待機します...")
+            time.sleep(10)
+            return {"is_relevant": False}
+            
         response.raise_for_status()
         res_json = response.json()
         raw_text = res_json["candidates"][0]["content"]["parts"][0]["text"]
@@ -90,6 +94,7 @@ def save_to_notion(title, url, summary, features, media_name):
 
     date_str = datetime.now(timezone(timedelta(hours=9))).strftime("%Y-%m-%d")
 
+    # 画像通りの列名 (Title, URL, Media, Design Features, Summary, Date) に合わせて送信
     payload = {
         "parent": {"database_id": NOTION_DATABASE_ID},
         "properties": {
@@ -128,9 +133,10 @@ def main():
         rss_url = feed_info["url"]
         
         entries = fetch_rss_entries(rss_url)
-        print(f"[{media_name}] Fetched {len(entries)} entries")
+        print(f"\n[{media_name}] Fetched {len(entries)} entries")
 
-        for entry in entries[:5]:
+        # レート制限（429エラー）回避のため、各メディア最新3件のみ処理
+        for entry in entries[:3]:
             title = entry.get("title", "")
             description = entry.get("summary", "") or entry.get("description", "")
             link = entry.get("link", "")
@@ -150,7 +156,8 @@ def main():
             else:
                 print(" -> Skipped (Not relevant)")
 
-            time.sleep(2)
+            # リクエスト間隔を5秒あける
+            time.sleep(5)
 
 if __name__ == "__main__":
     main()
