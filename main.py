@@ -94,7 +94,7 @@ def save_to_notion(title, url, summary, features, media_name):
 
     date_str = datetime.now(timezone(timedelta(hours=9))).strftime("%Y-%m-%d")
 
-    # 画像通りの列名 (Title, URL, Media, Design Features, Summary, Date) に合わせて送信
+    # Media列を multi_select 形式に変更して送信
     payload = {
         "parent": {"database_id": NOTION_DATABASE_ID},
         "properties": {
@@ -105,7 +105,7 @@ def save_to_notion(title, url, summary, features, media_name):
                 "url": url
             },
             "Media": {
-                "select": {"name": media_name}
+                "multi_select": [{"name": media_name}]
             },
             "Design Features": {
                 "rich_text": [{"text": {"content": features[:2000]}}]
@@ -135,7 +135,6 @@ def main():
         entries = fetch_rss_entries(rss_url)
         print(f"\n[{media_name}] Fetched {len(entries)} entries")
 
-        # レート制限（429エラー）回避のため、各メディア最新3件のみ処理
         for entry in entries[:3]:
             title = entry.get("title", "")
             description = entry.get("summary", "") or entry.get("description", "")
@@ -156,7 +155,6 @@ def main():
             else:
                 print(" -> Skipped (Not relevant)")
 
-            # リクエスト間隔を5秒あける
             time.sleep(5)
 
 if __name__ == "__main__":
