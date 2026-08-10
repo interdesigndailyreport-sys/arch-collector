@@ -23,49 +23,58 @@ TARGET_FEEDS = [
     }
 ]
 
+# 完全なブラウザ通信を装うヘッダー
+HTTP_HEADERS = {
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
+    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
+    "Accept-Language": "ja,en-US;q=0.9,en;q=0.8",
+    "Cache-Control": "no-cache",
+    "Pragma": "no-cache"
+}
+
 def fetch_rss_entries(url):
-    headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
-    }
+    """セキュリティ制限を回避しながらRSSを取得する"""
     try:
-        response = requests.get(url, headers=headers, timeout=15)
+        response = requests.get(url, headers=HTTP_HEADERS, timeout=15)
         response.raise_for_status()
-        return feedparser.parse(response.content).entries
+        feed = feedparser.parse(response.content)
+        if feed.entries:
+            return feed.entries
     except Exception as e:
-        print(f"RSS Fetch Error ({url}): {e}")
+        print(f"requests経由の取得失敗 ({url}): {e} -> feedparserで直接再試行します")
+
+    # リトライ：feedparserの直接通信機能を利用
+    try:
+        feed = feedparser.parse(url)
+        return feed.entries
+    except Exception as e:
+        print(f"RSS Fetch Direct Error ({url}): {e}")
         return []
 
-def extract_image_url(entry):
-    """RSSエントリからメイン画像のURLを抽出する"""
-    # 1. media_content / media_thumbnail タグからの取得
-    if "media_content" in entry and entry.media_content:
-        return entry.media_content[0].get("url")
-    if "media_thumbnail" in entry and entry.media_thumbnail:
-        return entry.media_thumbnail[0].get("url")
-        
-    # 2. 添付ファイル (enclosures) からの取得
-    if "enclosures" in entry and entry.enclosures:
-        for enc in entry.enclosures:
-            if enc.get("type", "").startswith("image"):
-                return enc.get("href") or enc.get("url")
-                
-    # 3. 本文(HTML)内の <img> タグからの抽出
-    content = ""
-    if "content" in entry:
-        content = entry.content[0].value
-    elif "summary" in entry:
-        content = entry.summary
-        
-    img_match = re.search(r'<img[^>]+src=["\']([^"\']+)["\']', content)
-    if img_match:
-        img_url = img_match.group(1)
-        # 不要な1x1トラッキングピクセルやアイコン等を除外
-        if not any(x in img_url.lower() for x in ["pixel", "icon", "avatar", "logo"]):
-            return img_url
+def get_og_image_url(article_url):
+    """記事のWebページにアクセスしてOGP(アイキャッチ)画像URLを直接抽出する"""
+    if not article_url:
+        return None
+    try:
+        res = requests.get(article_url, headers=HTTP_HEADERS, timeout=10, allow_redirects=True)
+        if res.status_code == 200:
+            html = res.text
+            # <meta property="og:image" content="..."> または <meta name="og:image" ...> を正規表現で探索
+            match = re.search(r'<meta[^>]+(?:property|name)=["\']og:image["\'][^>]+content=["\']([^"\']+)["\']', html, re.IGNORECASE)
+            if not match:
+                match = re.search(r'<meta[^>]+content=["\']([^"\']+)["\'][^>]+(?:property|name)=["\']og:image["\']', html, re.IGNORECASE)
             
+            if match:
+                img_url = match.group(1)
+                # Google等のプロキシ画像やアイコン類を除外
+                if img_url.startswith("http") and not any(x in img_url.lower() for x in ["icon", "avatar", "logo-square"]):
+                    return img_url
+    except Exception as e:
+        print(f" -> OGP Image Extraction Error ({article_url}): {e}")
     return None
 
 def analyze_with_gemini(title, description, link):
+    """Gemini APIによる判定と構造化"""
     url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key={GEMINI_API_KEY}"
     
     prompt = f"""
@@ -112,6 +121,7 @@ URL: {link}
         return {"is_relevant": False}
 
 def save_to_notion(title, url, summary, features, media_name, image_url=None):
+    """Notion APIへのデータ保存"""
     notion_url = "https://api.notion.com/v1/pages"
     headers = {
         "Authorization": f"Bearer {NOTION_API_KEY}",
@@ -133,7 +143,7 @@ def save_to_notion(title, url, summary, features, media_name, image_url=None):
         }
     }
 
-    # 画像URLが存在する場合、Notionのページカバー画像に設定（ギャラリー表示用）
+    # ページカバー画像（ギャラリー表示用）を設定
     if image_url:
         payload["cover"] = {
             "type": "external",
@@ -142,12 +152,12 @@ def save_to_notion(title, url, summary, features, media_name, image_url=None):
 
     res = requests.post(notion_url, headers=headers, json=payload, timeout=30)
     if res.status_code == 200:
-        print(f"Successfully saved to Notion (Cover Attached): {title}")
+        print(f"Successfully saved to Notion (Cover: {'Yes' if image_url else 'No'}): {title}")
     else:
         print(f"Notion API Error ({res.status_code}): {res.text}")
 
 def main():
-    print("Starting Architecture RSS Scraping with Image Extraction...")
+    print("Starting Architecture RSS Scraping with OGP Extraction...")
     
     for feed_info in TARGET_FEEDS:
         media_name = feed_info["name"]
@@ -156,18 +166,23 @@ def main():
         entries = fetch_rss_entries(rss_url)
         print(f"\n[{media_name}] Fetched {len(entries)} entries")
 
+        # 各メディア最新3件を読み込み
         for entry in entries[:3]:
             title = entry.get("title", "")
             description = entry.get("summary", "") or entry.get("description", "")
             link = entry.get("link", "")
-            image_url = extract_image_url(entry)
 
             print(f"\nAnalyzing: {title}")
+            
+            # 1. 記事Webページから高画質なOGP(カバー)画像を抽出
+            image_url = get_og_image_url(link)
             if image_url:
-                print(f" -> Found Image URL: {image_url}")
+                print(f" -> Found OGP Image: {image_url}")
 
+            # 2. Gemini APIで解析
             analysis = analyze_with_gemini(title, description, link)
             
+            # 3. Notionへ保存
             if analysis.get("is_relevant"):
                 print(" -> Relevant architecture info found!")
                 save_to_notion(
@@ -181,7 +196,7 @@ def main():
             else:
                 print(" -> Skipped (Not relevant)")
 
-            time.sleep(5)
+            time.sleep(4)
 
 if __name__ == "__main__":
     main()
