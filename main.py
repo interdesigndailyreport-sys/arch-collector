@@ -10,8 +10,20 @@ GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
 NOTION_API_KEY = os.environ.get("NOTION_API_KEY")
 NOTION_DATABASE_ID = os.environ.get("NOTION_DATABASE_ID")
 
-# 監視対象のRSSリスト
+# 監視対象のRSSリスト（国内建築メディア ＋ 海外事例 ＋ マンション新築情報）
 TARGET_FEEDS = [
+    {
+        "name": "architecturephoto",
+        "url": "https://architecturephoto.net/feed/"
+    },
+    {
+        "name": "tecture mag",
+        "url": "https://mag.tecture.jp/feed/"
+    },
+    {
+        "name": "新建築.online",
+        "url": "https://shinkenchiku.online/feed/"
+    },
     {
         "name": "ArchDaily",
         "url": "https://www.archdaily.com/rss"
@@ -19,6 +31,11 @@ TARGET_FEEDS = [
     {
         "name": "AXIS Web Magazine",
         "url": "https://www.axismag.jp/feed"
+    },
+    {
+        "name": "大手分譲マンション新築ニュース",
+        # Googleニュースの「分譲マンション 新築 デザイン」検索結果RSS
+        "url": "https://news.google.com/rss/search?q=%E5%88%86%E8%AD%B2%E3%83%9E%E3%83%B3%E3%82%B7%E3%83%A7%E3%83%B3+%E6%96%B0%E7%AF%89+%E3%83%87%E3%82%B6%E3%82%A4%E3%83%B3&hl=ja&gl=JP&ceid=JP:ja"
     }
 ]
 
