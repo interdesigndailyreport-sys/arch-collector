@@ -1,6 +1,7 @@
 import os
 import json
 import time
+import re
 from datetime import datetime, timezone, timedelta
 import feedparser
 import requests
@@ -10,51 +11,61 @@ GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
 NOTION_API_KEY = os.environ.get("NOTION_API_KEY")
 NOTION_DATABASE_ID = os.environ.get("NOTION_DATABASE_ID")
 
-# 監視対象のRSSリスト（国内建築メディア ＋ 海外事例 ＋ マンション新築情報）
 TARGET_FEEDS = [
-    {
-        "name": "architecturephoto",
-        "url": "https://architecturephoto.net/feed/"
-    },
-    {
-        "name": "tecture mag",
-        "url": "https://mag.tecture.jp/feed/"
-    },
-    {
-        "name": "新建築.online",
-        "url": "https://shinkenchiku.online/feed/"
-    },
-    {
-        "name": "ArchDaily",
-        "url": "https://www.archdaily.com/rss"
-    },
-    {
-        "name": "AXIS Web Magazine",
-        "url": "https://www.axismag.jp/feed"
-    },
+    {"name": "architecturephoto", "url": "https://architecturephoto.net/feed/"},
+    {"name": "tecture mag", "url": "https://mag.tecture.jp/feed/"},
+    {"name": "新建築.online", "url": "https://shinkenchiku.online/feed/"},
+    {"name": "ArchDaily", "url": "https://www.archdaily.com/rss"},
+    {"name": "AXIS Web Magazine", "url": "https://www.axismag.jp/feed"},
     {
         "name": "大手分譲マンション新築ニュース",
-        # Googleニュースの「分譲マンション 新築 デザイン」検索結果RSS
         "url": "https://news.google.com/rss/search?q=%E5%88%86%E8%AD%B2%E3%83%9E%E3%83%B3%E3%82%B7%E3%83%A7%E3%83%B3+%E6%96%B0%E7%AF%89+%E3%83%87%E3%82%B6%E3%82%A4%E3%83%B3&hl=ja&gl=JP&ceid=JP:ja"
     }
 ]
 
 def fetch_rss_entries(url):
-    """User-Agentを設定してアクセス拒否を回避しRSSを取得する"""
     headers = {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
     }
     try:
         response = requests.get(url, headers=headers, timeout=15)
         response.raise_for_status()
-        feed = feedparser.parse(response.content)
-        return feed.entries
+        return feedparser.parse(response.content).entries
     except Exception as e:
         print(f"RSS Fetch Error ({url}): {e}")
         return []
 
+def extract_image_url(entry):
+    """RSSエントリからメイン画像のURLを抽出する"""
+    # 1. media_content / media_thumbnail タグからの取得
+    if "media_content" in entry and entry.media_content:
+        return entry.media_content[0].get("url")
+    if "media_thumbnail" in entry and entry.media_thumbnail:
+        return entry.media_thumbnail[0].get("url")
+        
+    # 2. 添付ファイル (enclosures) からの取得
+    if "enclosures" in entry and entry.enclosures:
+        for enc in entry.enclosures:
+            if enc.get("type", "").startswith("image"):
+                return enc.get("href") or enc.get("url")
+                
+    # 3. 本文(HTML)内の <img> タグからの抽出
+    content = ""
+    if "content" in entry:
+        content = entry.content[0].value
+    elif "summary" in entry:
+        content = entry.summary
+        
+    img_match = re.search(r'<img[^>]+src=["\']([^"\']+)["\']', content)
+    if img_match:
+        img_url = img_match.group(1)
+        # 不要な1x1トラッキングピクセルやアイコン等を除外
+        if not any(x in img_url.lower() for x in ["pixel", "icon", "avatar", "logo"]):
+            return img_url
+            
+    return None
+
 def analyze_with_gemini(title, description, link):
-    """Gemini APIを使って建築・デザイン事例としての関連性を判定し要約・特徴抽出"""
     url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key={GEMINI_API_KEY}"
     
     prompt = f"""
@@ -100,8 +111,7 @@ URL: {link}
         print(f"Gemini API Error: {e}")
         return {"is_relevant": False}
 
-def save_to_notion(title, url, summary, features, media_name):
-    """Notion APIを使用してデータベースへ登録"""
+def save_to_notion(title, url, summary, features, media_name, image_url=None):
     notion_url = "https://api.notion.com/v1/pages"
     headers = {
         "Authorization": f"Bearer {NOTION_API_KEY}",
@@ -111,39 +121,33 @@ def save_to_notion(title, url, summary, features, media_name):
 
     date_str = datetime.now(timezone(timedelta(hours=9))).strftime("%Y-%m-%d")
 
-    # Media列を multi_select 形式に変更して送信
     payload = {
         "parent": {"database_id": NOTION_DATABASE_ID},
         "properties": {
-            "Title": {
-                "title": [{"text": {"content": title[:200]}}]
-            },
-            "URL": {
-                "url": url
-            },
-            "Media": {
-                "multi_select": [{"name": media_name}]
-            },
-            "Design Features": {
-                "rich_text": [{"text": {"content": features[:2000]}}]
-            },
-            "Summary": {
-                "rich_text": [{"text": {"content": summary[:2000]}}]
-            },
-            "Date": {
-                "date": {"start": date_str}
-            }
+            "Title": {"title": [{"text": {"content": title[:200]}}]},
+            "URL": {"url": url},
+            "Media": {"multi_select": [{"name": media_name}]},
+            "Design Features": {"rich_text": [{"text": {"content": features[:2000]}}]},
+            "Summary": {"rich_text": [{"text": {"content": summary[:2000]}}]},
+            "Date": {"date": {"start": date_str}}
         }
     }
 
+    # 画像URLが存在する場合、Notionのページカバー画像に設定（ギャラリー表示用）
+    if image_url:
+        payload["cover"] = {
+            "type": "external",
+            "external": {"url": image_url}
+        }
+
     res = requests.post(notion_url, headers=headers, json=payload, timeout=30)
     if res.status_code == 200:
-        print(f"Successfully saved to Notion: {title}")
+        print(f"Successfully saved to Notion (Cover Attached): {title}")
     else:
         print(f"Notion API Error ({res.status_code}): {res.text}")
 
 def main():
-    print("Starting Architecture RSS Scraping...")
+    print("Starting Architecture RSS Scraping with Image Extraction...")
     
     for feed_info in TARGET_FEEDS:
         media_name = feed_info["name"]
@@ -156,8 +160,12 @@ def main():
             title = entry.get("title", "")
             description = entry.get("summary", "") or entry.get("description", "")
             link = entry.get("link", "")
+            image_url = extract_image_url(entry)
 
             print(f"\nAnalyzing: {title}")
+            if image_url:
+                print(f" -> Found Image URL: {image_url}")
+
             analysis = analyze_with_gemini(title, description, link)
             
             if analysis.get("is_relevant"):
@@ -167,7 +175,8 @@ def main():
                     url=link,
                     summary=analysis.get("summary", ""),
                     features=analysis.get("design_features", ""),
-                    media_name=media_name
+                    media_name=media_name,
+                    image_url=image_url
                 )
             else:
                 print(" -> Skipped (Not relevant)")
