@@ -23,58 +23,53 @@ TARGET_FEEDS = [
     }
 ]
 
-# 完全なブラウザ通信を装うヘッダー
 HTTP_HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
     "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,*/*;q=0.8",
     "Accept-Language": "ja,en-US;q=0.9,en;q=0.8",
-    "Cache-Control": "no-cache",
-    "Pragma": "no-cache"
 }
 
 def fetch_rss_entries(url):
-    """セキュリティ制限を回避しながらRSSを取得する"""
+    """Cloudflare等のブロックを回避しながらRSSを取得"""
     try:
-        response = requests.get(url, headers=HTTP_HEADERS, timeout=15)
-        response.raise_for_status()
-        feed = feedparser.parse(response.content)
-        if feed.entries:
-            return feed.entries
+        session = requests.Session()
+        response = session.get(url, headers=HTTP_HEADERS, timeout=15)
+        if response.status_code == 200:
+            feed = feedparser.parse(response.content)
+            if feed.entries:
+                return feed.entries
     except Exception as e:
-        print(f"requests経由の取得失敗 ({url}): {e} -> feedparserで直接再試行します")
+        print(f"Session fetch failed for {url}: {e}")
 
-    # リトライ：feedparserの直接通信機能を利用
     try:
         feed = feedparser.parse(url)
         return feed.entries
     except Exception as e:
-        print(f"RSS Fetch Direct Error ({url}): {e}")
+        print(f"Direct feedparser failed for {url}: {e}")
         return []
 
 def get_og_image_url(article_url):
-    """記事のWebページにアクセスしてOGP(アイキャッチ)画像URLを直接抽出する"""
+    """記事WebページからOGP画像を抽出"""
     if not article_url:
         return None
     try:
         res = requests.get(article_url, headers=HTTP_HEADERS, timeout=10, allow_redirects=True)
         if res.status_code == 200:
             html = res.text
-            # <meta property="og:image" content="..."> または <meta name="og:image" ...> を正規表現で探索
             match = re.search(r'<meta[^>]+(?:property|name)=["\']og:image["\'][^>]+content=["\']([^"\']+)["\']', html, re.IGNORECASE)
             if not match:
                 match = re.search(r'<meta[^>]+content=["\']([^"\']+)["\'][^>]+(?:property|name)=["\']og:image["\']', html, re.IGNORECASE)
             
             if match:
                 img_url = match.group(1)
-                # Google等のプロキシ画像やアイコン類を除外
                 if img_url.startswith("http") and not any(x in img_url.lower() for x in ["icon", "avatar", "logo-square"]):
                     return img_url
     except Exception as e:
-        print(f" -> OGP Image Extraction Error ({article_url}): {e}")
+        print(f" -> OGP Extract Error: {e}")
     return None
 
-def analyze_with_gemini(title, description, link):
-    """Gemini APIによる判定と構造化"""
+def analyze_with_gemini(title, description, link, max_retries=3):
+    """429エラー時にリトライを行うGemini解析ロジック"""
     url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key={GEMINI_API_KEY}"
     
     prompt = f"""
@@ -87,7 +82,7 @@ def analyze_with_gemini(title, description, link):
 URL: {link}
 
 【処理条件】
-1. この記事が「建築デザイン」「新築・リノベーションマンション」「住宅の空間設計」「意匠・ファサード・建築トレンド」に関連するか判定してください。関係のない一般的ニュースは除外対象(is_relevant: false)とします。
+1. この記事が「建築デザイン」「新築・リノベーションマンション」「住宅の空間設計」「意匠・ファサード・建築トレンド」に関連するか判定してください。求人情報、一般的ニュース、関係のない不動産金融ニュースは除外対象(is_relevant: false)とします。
 2. 関連する(is_relevant: true)場合、建築デザインの意匠的特徴（素材、構造、空間構成、スタイル等）を2〜3つの箇条書き形式で抽出してください。
 3. 記事の概要を150字程度で簡潔に要約してください。
 
@@ -105,20 +100,27 @@ URL: {link}
     }
     headers = {"Content-Type": "application/json"}
 
-    try:
-        response = requests.post(url, headers=headers, json=payload, timeout=30)
-        if response.status_code == 429:
-            print(" -> Gemini API レート制限検知 (429)。10秒待機します...")
-            time.sleep(10)
-            return {"is_relevant": False}
+    for attempt in range(max_retries):
+        try:
+            response = requests.post(url, headers=headers, json=payload, timeout=30)
             
-        response.raise_for_status()
-        res_json = response.json()
-        raw_text = res_json["candidates"][0]["content"]["parts"][0]["text"]
-        return json.loads(raw_text)
-    except Exception as e:
-        print(f"Gemini API Error: {e}")
-        return {"is_relevant": False}
+            # 429（レートリミット）発生時は15秒待って再試行
+            if response.status_code == 429:
+                print(f" -> Gemini 429検知 (試行 {attempt+1}/{max_retries})。15秒待機して再試行します...")
+                time.sleep(15)
+                continue
+
+            response.raise_for_status()
+            res_json = response.json()
+            raw_text = res_json["candidates"][0]["content"]["parts"][0]["text"]
+            return json.loads(raw_text)
+
+        except Exception as e:
+            print(f"Gemini API Error (試行 {attempt+1}/{max_retries}): {e}")
+            time.sleep(5)
+
+    # リトライ回数を超えた場合のみ False を返す
+    return {"is_relevant": False}
 
 def save_to_notion(title, url, summary, features, media_name, image_url=None):
     """Notion APIへのデータ保存"""
@@ -143,7 +145,6 @@ def save_to_notion(title, url, summary, features, media_name, image_url=None):
         }
     }
 
-    # ページカバー画像（ギャラリー表示用）を設定
     if image_url:
         payload["cover"] = {
             "type": "external",
@@ -157,7 +158,7 @@ def save_to_notion(title, url, summary, features, media_name, image_url=None):
         print(f"Notion API Error ({res.status_code}): {res.text}")
 
 def main():
-    print("Starting Architecture RSS Scraping with OGP Extraction...")
+    print("Starting Architecture RSS Scraping (Rate Limit Fixed)...")
     
     for feed_info in TARGET_FEEDS:
         media_name = feed_info["name"]
@@ -166,23 +167,20 @@ def main():
         entries = fetch_rss_entries(rss_url)
         print(f"\n[{media_name}] Fetched {len(entries)} entries")
 
-        # 各メディア最新3件を読み込み
-        for entry in entries[:3]:
+        # 各メディア最新5件を順次チェック
+        for entry in entries[:5]:
             title = entry.get("title", "")
             description = entry.get("summary", "") or entry.get("description", "")
             link = entry.get("link", "")
 
             print(f"\nAnalyzing: {title}")
-            
-            # 1. 記事Webページから高画質なOGP(カバー)画像を抽出
             image_url = get_og_image_url(link)
             if image_url:
                 print(f" -> Found OGP Image: {image_url}")
 
-            # 2. Gemini APIで解析
+            # 429リトライ機能付きのGemini解析
             analysis = analyze_with_gemini(title, description, link)
             
-            # 3. Notionへ保存
             if analysis.get("is_relevant"):
                 print(" -> Relevant architecture info found!")
                 save_to_notion(
@@ -196,7 +194,8 @@ def main():
             else:
                 print(" -> Skipped (Not relevant)")
 
-            time.sleep(4)
+            # 安全なリクエスト間隔（6秒）
+            time.sleep(6)
 
 if __name__ == "__main__":
     main()
