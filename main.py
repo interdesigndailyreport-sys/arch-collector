@@ -11,24 +11,30 @@ GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY")
 NOTION_API_KEY = os.environ.get("NOTION_API_KEY")
 NOTION_DATABASE_ID = os.environ.get("NOTION_DATABASE_ID")
 
-# 事前判定用キーワード（この言葉が含まれる記事のみGeminiへ送信してAPI消費を削減）
-KEYWORDS = ["建築", "マンション", "デザイン", "設計", "リノベーション", "ファサード", "住宅", "インテリア", "構造", "住戸"]
+# 日本語 ＋ 英語の建築キーワード
+KEYWORDS = [
+    "建築", "マンション", "デザイン", "設計", "リノベーション", "ファサード", "住宅", "インテリア", "構造", "住戸", "空間", "施設", "美術館", "店舗",
+    "architecture", "house", "building", "design", "residence", "project", "interior", "renovation", "structure", "facade", "museum", "office"
+]
 
 TARGET_FEEDS = [
-    {"name": "architecturephoto", "url": "https://architecturephoto.net/feed/"},
-    {"name": "ArchDaily", "url": "https://www.archdaily.com/rss"},
-    {"name": "AXIS Web Magazine", "url": "https://www.axismag.jp/feed"},
+    {"name": "architecturephoto", "url": "https://architecturephoto.net/feed/", "bypass_filter": True},
+    {"name": "ArchDaily", "url": "https://www.archdaily.com/rss", "bypass_filter": True},
+    {"name": "AXIS Web Magazine", "url": "https://www.axismag.jp/feed/", "bypass_filter": False},
     {
         "name": "tecture mag (Google経由)",
-        "url": "https://news.google.com/rss/search?q=site:mag.tecture.jp&hl=ja&gl=JP&ceid=JP:ja"
+        "url": "https://news.google.com/rss/search?q=site:mag.tecture.jp&hl=ja&gl=JP&ceid=JP:ja",
+        "bypass_filter": True
     },
     {
         "name": "新建築 (Google経由)",
-        "url": "https://news.google.com/rss/search?q=site:shinkenchiku.online&hl=ja&gl=JP&ceid=JP:ja"
+        "url": "https://news.google.com/rss/search?q=site:shinkenchiku.online&hl=ja&gl=JP&ceid=JP:ja",
+        "bypass_filter": True
     },
     {
         "name": "大手分譲マンション新築ニュース",
-        "url": "https://news.google.com/rss/search?q=%E5%88%86%E8%AD%B2%E3%83%9E%E3%83%B3%E3%82%B7%E3%83%A7%E3%83%B3+%E6%96%B0%E7%AF%89+%E3%83%87%E3%82%B6%E3%82%A4%E3%83%B3&hl=ja&gl=JP&ceid=JP:ja"
+        "url": "https://news.google.com/rss/search?q=%E5%88%86%E8%AD%B2%E3%83%9E%E3%83%B3%E3%82%B7%E3%83%A7%E3%83%B3+%E6%96%B0%E7%AF%89+%E3%83%87%E3%82%B6%E3%82%A4%E3%83%B3&hl=ja&gl=JP&ceid=JP:ja",
+        "bypass_filter": False
     }
 ]
 
@@ -50,7 +56,7 @@ def fetch_rss_entries(url):
         return []
 
 def is_pre_filtered(title, description):
-    """Python側で一次フィルタリング（API消費を削減）"""
+    """タイトルまたは概要に建築関連ワードが含まれるかチェック"""
     text = f"{title} {description}".lower()
     return any(kw.lower() in text for kw in KEYWORDS)
 
@@ -68,7 +74,7 @@ def get_og_image_url(article_url):
     return None
 
 def analyze_with_gemini(title, description, link):
-    # 無料枠制限が1日500回（RPD 500）と非常に広い gemini-3.5-flash-lite モデルを使用
+    # 無料枠制限が1日500回と広い gemini-3.5-flash-lite を使用
     url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-3.5-flash-lite:generateContent?key={GEMINI_API_KEY}"
     
     prompt = f"""
@@ -77,8 +83,8 @@ def analyze_with_gemini(title, description, link):
 概要: {description}
 
 【条件】
-1. 求人情報や不適切な記事は is_relevant: false にしてください。
-2. 建築・デザイン・住宅に関連する場合は is_relevant: true とし、意匠的特徴(design_features)と要約(summary)を抽出してください。
+1. 単なる求人情報や不適切な記事は is_relevant: false にしてください。
+2. 建築・デザイン・住宅・都市空間に関連する場合は is_relevant: true とし、意匠的特徴(design_features)と要約(summary)を抽出してください。
 
 【出力形式 (JSON)】
 {{
@@ -138,6 +144,7 @@ def main():
     
     for feed_info in TARGET_FEEDS:
         media_name = feed_info["name"]
+        bypass = feed_info.get("bypass_filter", False)
         entries = fetch_rss_entries(feed_info["url"])
         print(f"\n[{media_name}] {len(entries)} entries fetched", flush=True)
 
@@ -146,8 +153,8 @@ def main():
             description = entry.get("summary", "") or entry.get("description", "")
             link = entry.get("link", "")
 
-            # 1. 事前キーワードチェック（API消費を大幅削減）
-            if not is_pre_filtered(title, description):
+            # 専門メディア(bypass=True)はキーワードチェックを免除してGeminiに送る
+            if not bypass and not is_pre_filtered(title, description):
                 print(f" Skipped by Keyword Filter: {title}", flush=True)
                 continue
 
@@ -157,6 +164,8 @@ def main():
             
             if analysis.get("is_relevant"):
                 save_to_notion(title, link, analysis.get("summary", ""), analysis.get("design_features", ""), media_name, image_url)
+            else:
+                print(f" Skipped by Gemini Judgment: {title}", flush=True)
 
             time.sleep(2)
 
