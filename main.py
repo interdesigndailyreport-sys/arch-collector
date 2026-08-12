@@ -68,8 +68,8 @@ def get_og_image_url(article_url):
     return None
 
 def analyze_with_gemini(title, description, link):
-    # 軽量で安定したgemini-1.5-flashを使用
-    url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent?key={GEMINI_API_KEY}"
+    # 軽量で安定したgemini-3.5-flashliteを使用
+url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-3.5-flash-lite:generateContent?key={GEMINI_API_KEY}"
     
     prompt = f"""
 あなたは建築専門アナリストです。以下の記事を分析しJSONのみで回答してください。
